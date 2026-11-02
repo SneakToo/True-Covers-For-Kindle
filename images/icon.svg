@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Generic e-reader silhouette with outer light rim for dark-theme contrast -->
+  <rect x="14" y="8" width="84" height="108" rx="12" ry="12" fill="#263238" stroke="#ECEFF1" stroke-width="4"/>
+  <!-- E-reader screen -->
+  <rect x="23" y="18" width="66" height="82" rx="4" ry="4" fill="#F5F7FA"/>
+  <!-- Generic page-turn home bar at bottom bezel -->
+  <rect x="46" y="106" width="20" height="4" rx="2" ry="2" fill="#90A4AE"/>
+
+  <!-- Book cover centered on the screen -->
+  <rect x="31" y="25" width="50" height="68" rx="3" ry="3" fill="#1E88E5" stroke="#0D47A1" stroke-width="2"/>
+  <!-- Book spine highlight -->
+  <rect x="31" y="25" width="9" height="68" rx="2" ry="2" fill="#1565C0"/>
+  <!-- Simple cover artwork shapes (mountain/sun badge & title bars) -->
+  <rect x="46" y="34" width="28" height="5" rx="2.5" ry="2.5" fill="#FFFFFF"/>
+  <rect x="49" y="43" width="22" height="4" rx="2" ry="2" fill="#BBDEFB"/>
+  <circle cx="60" cy="64" r="11" fill="#FFC107"/>
+  <path d="M53 70 L58 62 L63 67 L66 63 L69 70 Z" fill="#0D47A1"/>
+
+  <!-- Checkmark badge (bottom-right) meaning "correct cover applied" -->
+  <circle cx="94" cy="94" r="24" fill="#16A34A" stroke="#FFFFFF" stroke-width="5"/>
+  <path d="M83 94 L91 102 L106 86" fill="none" stroke="#FFFFFF" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

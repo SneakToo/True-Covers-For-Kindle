@@ -1,0 +1,35 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test & linter caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Built calibre plugin archive(s)
+*.zip
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Temporary & atomic write files
+*.tmp
+*.tmp.*
+
+# Local planning & agent instruction files
+PLAN.md
+AGENTS.md
+
+# OS & editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.swp

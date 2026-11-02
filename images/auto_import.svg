@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Folder back tab with light rim for dark/light theme visibility -->
+  <path d="M12 28 C12 22.5 16.5 18 22 18 L48 18 L58 28 L106 28 C111.5 28 116 32.5 116 38 L116 96 C116 101.5 111.5 106 106 106 L22 106 C16.5 106 12 101.5 12 96 Z" fill="#D97706" stroke="#ECEFF1" stroke-width="4" stroke-linejoin="round"/>
+  <!-- Small book peeking from folder -->
+  <rect x="34" y="24" width="60" height="40" rx="4" ry="4" fill="#1E88E5" stroke="#0D47A1" stroke-width="2.5"/>
+  <rect x="44" y="32" width="32" height="5" rx="2.5" ry="2.5" fill="#FFFFFF"/>
+  <!-- Folder front flap -->
+  <rect x="12" y="42" width="104" height="64" rx="10" ry="10" fill="#F59E0B" stroke="#B45309" stroke-width="3"/>
+
+  <!-- Import arrow badge (bottom-right) -->
+  <circle cx="94" cy="94" r="24" fill="#0284C7" stroke="#FFFFFF" stroke-width="5"/>
+  <path d="M94 81 L94 103 M84 95 L94 105 L104 95" fill="none" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
