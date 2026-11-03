@@ -30,6 +30,7 @@ PERSONAL_DOCUMENT_CONVERTIBLE_FORMATS = (
 )
 
 CONVERSION_TIMEOUT_SEC = 240
+WIN32_CREATE_NO_WINDOW = 0x08000000
 
 STATUS_FIXED     = 'fixed'
 STATUS_UNMATCHED = 'unmatched'
@@ -92,6 +93,23 @@ def find_ebook_convert_exe() -> str:
     return 'ebook-convert'
 
 
+def _headless_subprocess_kwargs() -> dict[str, Any]:
+    """Return subprocess keyword arguments that suppress console window creation on Windows."""
+    kwargs: dict[str, Any] = {
+        'stdin': subprocess.DEVNULL,
+        'stdout': subprocess.DEVNULL,
+        'stderr': subprocess.DEVNULL,
+    }
+    if os.name == 'nt':
+        kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', WIN32_CREATE_NO_WINDOW)
+        if hasattr(subprocess, 'STARTUPINFO'):
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= getattr(subprocess, 'STARTF_USESHOWWINDOW', 0x00000001)
+            startupinfo.wShowWindow = getattr(subprocess, 'SW_HIDE', 0)
+            kwargs['startupinfo'] = startupinfo
+    return kwargs
+
+
 def convert_book_to_azw3(db: Any, book_id: int, src_fmt: str) -> bool:
     """Convert a book format in the calibre database to AZW3 using ebook-convert."""
     src_path = db.format_abspath(book_id, src_fmt)
@@ -102,10 +120,9 @@ def convert_book_to_azw3(db: Any, book_id: int, src_fmt: str) -> bool:
         out_azw3 = os.path.join(tmpdir, f'book_{book_id}.azw3')
         subprocess.run(
             [ebook_convert, src_path, out_azw3, '--share-not-sync'],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
             timeout=CONVERSION_TIMEOUT_SEC,
-            check=False
+            check=False,
+            **_headless_subprocess_kwargs()
         )
         if os.path.exists(out_azw3) and os.path.getsize(out_azw3) > 0:
             db.add_format(book_id, 'AZW3', out_azw3, replace=True, run_hooks=False)

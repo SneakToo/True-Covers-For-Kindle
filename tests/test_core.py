@@ -464,6 +464,19 @@ class TestBuildPlugin(unittest.TestCase):
                 self.assertIn('THIRD_PARTY_NOTICES.md', names)
                 self.assertIn('licenses/SAMPLE_MIT.txt', names)
 
+    def test_headless_subprocess_kwargs_suppresses_console_on_windows(self):
+        import subprocess
+        from pipelines import _headless_subprocess_kwargs, WIN32_CREATE_NO_WINDOW
+
+        kwargs = _headless_subprocess_kwargs()
+        self.assertEqual(kwargs['stdin'], subprocess.DEVNULL)
+        self.assertEqual(kwargs['stdout'], subprocess.DEVNULL)
+        self.assertEqual(kwargs['stderr'], subprocess.DEVNULL)
+        if os.name == 'nt':
+            self.assertTrue(kwargs['creationflags'] & WIN32_CREATE_NO_WINDOW)
+            self.assertIn('startupinfo', kwargs)
+            self.assertEqual(kwargs['startupinfo'].wShowWindow, 0)
+
 
 if __name__ == '__main__':
     unittest.main()
