@@ -413,6 +413,23 @@ class TestAutoImportEngine(unittest.TestCase):
             self.assertEqual(len(found), 1)
             self.assertEqual(found[0][0], settled_epub)
 
+    def test_discover_settled_files_orders_preferred_formats_first(self):
+        from auto_import import AutoImportEngine
+        with tempfile.TemporaryDirectory() as tmpdir:
+            watch_dir = os.path.join(tmpdir, 'watch')
+            os.makedirs(watch_dir)
+            state_path = os.path.join(tmpdir, 'watch_state.json')
+
+            for ext in ('pdf', 'mobi', 'epub', 'azw3'):
+                fpath = os.path.join(watch_dir, f'book.{ext}')
+                with open(fpath, 'wb') as f:
+                    f.write(b'ebook content')
+
+            engine = AutoImportEngine(state_path)
+            found = engine.discover_settled_files(watch_dir, {'pdf', 'mobi', 'epub', 'azw3'}, min_settle_sec=0)
+            found_exts = [ext for _, ext, _ in found]
+            self.assertEqual(found_exts, ['epub', 'azw3', 'mobi', 'pdf'])
+
 
 class TestBuildPlugin(unittest.TestCase):
     """Tests for build_plugin.py packaging including LICENSE, THIRD_PARTY_NOTICES.md, and optional licenses/ folder."""

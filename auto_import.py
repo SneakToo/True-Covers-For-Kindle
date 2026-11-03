@@ -20,6 +20,19 @@ class AutoImportEngine:
 
     IGNORED_PATTERNS    = ('.part', '.!qb', '.crdownload', '.tmp', '.aria2', '.ds_store')
     SIDECAR_COVER_NAMES = ('cover.jpg', 'cover.jpeg', 'cover.png', 'folder.jpg')
+    FORMAT_PRIORITY     = {
+        'epub': 0,
+        'azw3': 1,
+        'mobi': 2,
+        'fb2': 3,
+        'docx': 4,
+        'htmlz': 5,
+        'rtf': 6,
+        'txt': 7,
+        'cbz': 8,
+        'cbr': 9,
+        'pdf': 10,
+    }
 
     def __init__(self, state_path: str):
         self.state_path = state_path
@@ -85,6 +98,13 @@ class AutoImportEngine:
 
                     if self._seen.get(full_path) != sig:
                         discovered.append((full_path, ext, sig))
+        discovered.sort(
+            key=lambda item: (
+                os.path.dirname(item[0]).lower(),
+                self.FORMAT_PRIORITY.get(item[1], 99),
+                os.path.basename(item[0]).lower(),
+            )
+        )
         return discovered
 
     @classmethod

@@ -25,7 +25,7 @@ class TrueCoversKindlePlugin(InterfaceActionBase):
     )
     supported_platforms     = ['windows', 'osx', 'linux']
     author                  = 'Aidan Welch'
-    version                 = (1, 0, 0)
+    version                 = (1, 0, 1)
     minimum_calibre_version = (6, 0, 0)
     actual_plugin           = 'calibre_plugins.true_covers_kindle.action:TrueCoversKindleAction'
 

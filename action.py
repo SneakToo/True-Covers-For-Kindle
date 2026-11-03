@@ -431,6 +431,25 @@ class TrueCoversKindleAction(InterfaceAction):
         except Exception as err:
             self._audit_history.append(f'[WARN] Could not sync missing library view rows: {err}')
 
+    def _refresh_library_rows_and_details(self, book_ids):
+        """Refresh book_ids in the library model and force the Book Details sidebar to update immediately."""
+        if not book_ids:
+            return
+        try:
+            model = self.gui.library_view.model()
+            current_idx = self.gui.library_view.currentIndex()
+            current_row = current_idx.row() if current_idx.isValid() else -1
+            model.refresh_ids(book_ids, current_row=current_row)
+            if current_idx.isValid():
+                model.current_changed(current_idx, current_idx)
+            self.gui.refresh_cover_browser()
+        except Exception as err:
+            self._audit_history.append(f'[WARN] Could not refresh book details view: {err}')
+        try:
+            self.gui.tags_view.recount()
+        except Exception:
+            pass
+
     def location_selected(self, loc):
         self._is_library_selected = (loc == 'library')
         self._update_action_enabled_states()
@@ -723,7 +742,7 @@ class TrueCoversKindleAction(InterfaceAction):
     # --- Database Event Hook for Manual Calibre Adds (EventType.format_added) ---
 
     def _db_event_listener(self, event_type, library_id, event_data):
-        if self._shutting_down or not PREFS['auto_run_on_add']:
+        if self._shutting_down or self._auto_import_running or not PREFS['auto_run_on_add']:
             return
         try:
             evt_name = getattr(event_type, 'name', str(event_type))
@@ -1028,8 +1047,7 @@ class TrueCoversKindleAction(InterfaceAction):
                             self.gui.search.set_search_string('')
                     except Exception:
                         pass
-                self.gui.library_view.model().refresh_ids(refreshed_ids)
-                self.gui.tags_view.recount()
+                self._refresh_library_rows_and_details(refreshed_ids)
 
             if unmatched_marks:
                 self._merge_marked_ids(unmatched_marks)
@@ -1254,7 +1272,7 @@ class TrueCoversKindleAction(InterfaceAction):
         self._manual_asin_done_sig.emit(int(book_id), title, asin, bool(stamped), bool(is_live), int(img_sz))
 
     def _on_manual_asin_done_main_thread(self, book_id, title, asin, stamped, is_live, img_sz):
-        self.gui.library_view.model().refresh_ids([book_id])
+        self._refresh_library_rows_and_details([book_id])
         if not stamped:
             error_dialog(
                 self.gui,
