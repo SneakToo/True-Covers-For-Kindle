@@ -19,6 +19,13 @@ except ImportError:
 CONTENT_HASH_PREFIX = 'sha256:'
 CONTENT_HASH_CHUNK_BYTES = 65536
 TITLE_ALNUM_RE = re.compile(r'[^a-z0-9]+')
+PLACEHOLDER_TITLE_RE = re.compile(
+    r'^(?:untitled|unknown|(?:isbn[:\s-]*)?\d{9,13}[\dxX]?)(?:\.[a-z0-9]{2,5})?$|'
+    r'^.+\.(?:pdf|epub|mobi|azw3|azw|fb2|cbz|cbr|docx|txt|rtf)$',
+    re.IGNORECASE
+)
+STOPWORDS = frozenset({'the', 'and', 'for', 'from', 'with', 'into', 'novel', 'edition', 'book'})
+MATCH_IDENTIFIER_KEYS = ('isbn', 'mobi-asin', 'asin', 'amazon', 'goodreads')
 
 
 class AutoImportEngine:
@@ -161,6 +168,20 @@ class AutoImportEngine:
         )
         return discovered
 
+    @staticmethod
+    def _significant_words(text: str) -> set[str]:
+        """Extract lowercase alphanumeric words of 3+ characters (excluding common stopwords)."""
+        words = TITLE_ALNUM_RE.sub(' ', (text or '').lower()).split()
+        return {w for w in words if len(w) >= 3 and w not in STOPWORDS}
+
+    @classmethod
+    def _is_placeholder_title(cls, title: Optional[str]) -> bool:
+        """Return True if title is missing or looks like a raw ISBN or filename with extension."""
+        cleaned = (title or '').strip()
+        if not cleaned:
+            return True
+        return bool(PLACEHOLDER_TITLE_RE.match(cleaned))
+
     @classmethod
     def _read_metadata_with_sidecars(
         cls,
@@ -181,7 +202,7 @@ class AutoImportEngine:
             dir_files = []
 
         stem = os.path.splitext(os.path.basename(full_path))[0]
-        if not getattr(mi, 'title', None) or mi.title == stem:
+        if cls._is_placeholder_title(getattr(mi, 'title', None)) or mi.title == stem:
             opf_file = next((f for f in dir_files if f.lower().endswith('.opf')), None)
             if opf_file:
                 try:
@@ -197,7 +218,27 @@ class AutoImportEngine:
                     if log_fn:
                         log_fn(f'[AUTO-IMPORT-WARN] Could not parse sidecar OPF {opf_file}: {opf_err}')
 
-        if not getattr(mi, 'title', None):
+        # Reconcile working/codename titles (e.g. "Tremble for My Country" inside an EPUB named
+        # "Between the World and Me - Ta-Nehisi Coates.epub") using sibling formats with the same stem.
+        stem_words = cls._significant_words(stem)
+        title_words = cls._significant_words(getattr(mi, 'title', '') or '')
+        if stem_words and not cls._is_placeholder_title(getattr(mi, 'title', None)) and not (title_words & stem_words):
+            for fname in dir_files:
+                sib_stem, sib_dot_ext = os.path.splitext(fname)
+                sib_ext = sib_dot_ext.lower().lstrip('.')
+                if sib_stem.lower() == stem.lower() and sib_ext != ext.lower() and sib_ext in cls.FORMAT_PRIORITY:
+                    try:
+                        sib_path = os.path.join(parent_dir, fname)
+                        with open(sib_path, 'rb') as sib_stream:
+                            sib_mi = get_metadata(sib_stream, stream_type=sib_ext, use_libprs_metadata=True)
+                        sib_title = getattr(sib_mi, 'title', '') or ''
+                        if cls._significant_words(sib_title) & stem_words:
+                            mi.title = sib_title
+                            break
+                    except Exception:
+                        continue
+
+        if cls._is_placeholder_title(getattr(mi, 'title', None)):
             mi.title = stem
 
         sidecar_cover_bytes = None
@@ -215,6 +256,31 @@ class AutoImportEngine:
 
         return mi, sidecar_cover_bytes
 
+    @staticmethod
+    def _extract_comparable_identifiers(mi: Any) -> dict[str, str]:
+        """Extract normalized ISBN/ASIN/Amazon identifiers from a Metadata object."""
+        result: dict[str, str] = {}
+        raw_idents: dict[str, Any] = {}
+        if hasattr(mi, 'get_identifiers'):
+            try:
+                raw_idents = dict(mi.get_identifiers() or {})
+            except Exception:
+                raw_idents = {}
+        elif getattr(mi, 'identifiers', None):
+            try:
+                raw_idents = dict(mi.identifiers or {})
+            except Exception:
+                raw_idents = {}
+        for k, v in raw_idents.items():
+            key_low = str(k or '').strip().lower()
+            val_norm = re.sub(r'[\s-]+', '', str(v or '').strip()).upper()
+            if key_low in MATCH_IDENTIFIER_KEYS and val_norm:
+                result[key_low] = val_norm
+        isbn_attr = re.sub(r'[\s-]+', '', str(getattr(mi, 'isbn', '') or '').strip()).upper()
+        if isbn_attr and isbn_attr != 'NONE' and 'isbn' not in result:
+            result['isbn'] = isbn_attr
+        return result
+
     @classmethod
     def _find_existing_book_ids(
         cls,
@@ -223,7 +289,7 @@ class AutoImportEngine:
         full_path: str = '',
         ext: str = ''
     ) -> list[int]:
-        """Return existing library book IDs matching mi by identity, normalized title, or identical format content."""
+        """Return existing library book IDs matching mi by identity, identifiers, normalized title, or content hash."""
         try:
             if hasattr(db, 'find_identical_books'):
                 ids = db.find_identical_books(mi)
@@ -234,22 +300,37 @@ class AutoImportEngine:
 
         title_raw = str(getattr(mi, 'title', '') or '').strip().lower()
         title_alnum = TITLE_ALNUM_RE.sub(' ', title_raw).strip()
+        mi_idents = cls._extract_comparable_identifiers(mi)
         matched: set[int] = set()
         try:
             all_ids = list(db.all_book_ids())
         except Exception:
             all_ids = []
 
-        if title_raw:
-            for bid in all_ids:
-                try:
+        for bid in all_ids:
+            try:
+                if title_raw:
                     t = str(db.field_for('title', bid) or '').strip().lower()
-                    if not t:
-                        continue
-                    if t == title_raw or (title_alnum and TITLE_ALNUM_RE.sub(' ', t).strip() == title_alnum):
+                    if t and (t == title_raw or (title_alnum and TITLE_ALNUM_RE.sub(' ', t).strip() == title_alnum)):
                         matched.add(int(bid))
-                except Exception:
-                    continue
+                        continue
+                if mi_idents:
+                    book_idents = db.field_for('identifiers', bid) or {}
+                    for k, v in book_idents.items():
+                        key_low = str(k or '').strip().lower()
+                        val_norm = re.sub(r'[\s-]+', '', str(v or '').strip()).upper()
+                        if key_low in mi_idents and val_norm and mi_idents[key_low] == val_norm:
+                            matched.add(int(bid))
+                            break
+                        if key_low in ('asin', 'mobi-asin', 'amazon') and val_norm:
+                            if any(
+                                mi_idents.get(mk) == val_norm
+                                for mk in ('asin', 'mobi-asin', 'amazon')
+                            ):
+                                matched.add(int(bid))
+                                break
+            except Exception:
+                continue
         if matched:
             return sorted(matched)
 
@@ -299,14 +380,35 @@ class AutoImportEngine:
         added_ids: list[int] = []
         retry_fix_ids: list[int] = []
         skipped_dups = 0
+        seen_stems_in_batch: dict[tuple[str, str], int] = {}
 
         for full_path, ext, sig in discovered_items:
             if abort is not None and abort.is_set():
                 break
             try:
+                stem_key = (
+                    os.path.normcase(os.path.dirname(full_path)),
+                    os.path.splitext(os.path.basename(full_path))[0].strip().lower()
+                )
+                if stem_key in seen_stems_in_batch:
+                    skipped_dups += 1
+                    content_id = self._compute_file_content_id(full_path)
+                    with self._lock:
+                        self._seen[full_path] = sig
+                        if content_id:
+                            self._seen[content_id] = sig
+                    if log_fn:
+                        log_fn(
+                            f'[AUTO-IMPORT-DUP] Skipped alternate format {os.path.basename(full_path)} '
+                            f'for book #{seen_stems_in_batch[stem_key]}'
+                        )
+                    continue
+
                 mi, sidecar_cover = self._read_metadata_with_sidecars(full_path, ext, log_fn=log_fn)
                 existing_ids = self._find_existing_book_ids(db, mi, full_path=full_path, ext=ext)
                 if existing_ids or db.has_book(mi):
+                    if existing_ids:
+                        seen_stems_in_batch[stem_key] = existing_ids[0]
                     unfixed_existing = [
                         bid for bid in existing_ids
                         if needs_fix_fn is not None and needs_fix_fn(bid)
@@ -339,6 +441,7 @@ class AutoImportEngine:
                     )
                     if ids:
                         bid = ids[0]
+                        seen_stems_in_batch[stem_key] = bid
                         if sidecar_cover:
                             try:
                                 db.set_cover({bid: sidecar_cover})

@@ -491,6 +491,33 @@ class TestAutoImportEngine(unittest.TestCase):
             )
             self.assertEqual(matched, [180])
 
+    def test_placeholder_title_and_identifier_deduplication(self):
+        from types import SimpleNamespace
+        from auto_import import AutoImportEngine
+
+        self.assertTrue(AutoImportEngine._is_placeholder_title('9780831197322.pdf'))
+        self.assertTrue(AutoImportEngine._is_placeholder_title('untitled'))
+        self.assertFalse(AutoImportEngine._is_placeholder_title('Between the World and Me'))
+
+        class FakeDbWithIdentifiers:
+            def all_book_ids(self):
+                return [176]
+
+            def field_for(self, name, bid):
+                if bid == 176:
+                    if name == 'title':
+                        return 'Between the World and Me'
+                    if name == 'identifiers':
+                        return {'isbn': '9780812993547', 'mobi-asin': 'B00SEFAIRI'}
+                return None
+
+        mi_working_title = SimpleNamespace(
+            title='Tremble for My Country',
+            identifiers={'isbn': '978-0-8129-9354-7', 'mobi-asin': 'B00SEFAIRI'}
+        )
+        matched = AutoImportEngine._find_existing_book_ids(FakeDbWithIdentifiers(), mi_working_title)
+        self.assertEqual(matched, [176])
+
 
 class TestBuildPlugin(unittest.TestCase):
     """Tests for build_plugin.py packaging including LICENSE, THIRD_PARTY_NOTICES.md, and optional licenses/ folder."""
