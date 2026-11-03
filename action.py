@@ -644,7 +644,13 @@ class TrueCoversKindleAction(InterfaceAction):
         # do not animate calibre's Jobs indicator when nothing new is in the watch folder.
         if manual:
             self._sync_missing_library_view_rows()
-        discovered = self.auto_import_engine.discover_settled_files(folder, exts, min_settle_sec=settle_sec)
+        try:
+            existing_book_ids = set(int(bid) for bid in self.gui.current_db.new_api.all_book_ids())
+        except Exception:
+            existing_book_ids = None
+        discovered = self.auto_import_engine.discover_settled_files(
+            folder, exts, min_settle_sec=settle_sec, existing_book_ids=existing_book_ids
+        )
         if not discovered:
             with self._lock:
                 self._auto_import_running = False

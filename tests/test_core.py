@@ -518,6 +518,32 @@ class TestAutoImportEngine(unittest.TestCase):
         matched = AutoImportEngine._find_existing_book_ids(FakeDbWithIdentifiers(), mi_working_title)
         self.assertEqual(matched, [176])
 
+    def test_deleted_library_book_is_rediscovered_while_existing_book_is_skipped(self):
+        from auto_import import AutoImportEngine
+        with tempfile.TemporaryDirectory() as tmpdir:
+            watch_dir = os.path.join(tmpdir, 'watch')
+            os.makedirs(watch_dir)
+            state_path = os.path.join(tmpdir, 'watch_state.json')
+
+            coates_path = os.path.normpath(os.path.join(watch_dir, 'coates.epub'))
+            machinery_path = os.path.normpath(os.path.join(watch_dir, 'machinery.pdf'))
+            for p in (coates_path, machinery_path):
+                with open(p, 'wb') as f:
+                    f.write(b'ebook payload')
+
+            st_coates = os.stat(coates_path)
+            st_mach = os.stat(machinery_path)
+            engine = AutoImportEngine(state_path)
+            engine._seen[coates_path] = f'{st_coates.st_size}:{int(st_coates.st_mtime)}#176'
+            engine._seen[machinery_path] = f'{st_mach.st_size}:{int(st_mach.st_mtime)}#182'
+            engine.save()
+
+            # Book #176 was deleted from calibre, while Book #182 still exists (even if renamed in calibre)
+            found = engine.discover_settled_files(
+                watch_dir, {'epub', 'pdf'}, min_settle_sec=0, existing_book_ids={182}
+            )
+            self.assertEqual([item[0] for item in found], [coates_path])
+
 
 class TestBuildPlugin(unittest.TestCase):
     """Tests for build_plugin.py packaging including LICENSE, THIRD_PARTY_NOTICES.md, and optional licenses/ folder."""

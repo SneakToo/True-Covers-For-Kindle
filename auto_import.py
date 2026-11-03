@@ -97,11 +97,32 @@ class AutoImportEngine:
         except OSError:
             return None
 
+    @staticmethod
+    def _parse_seen_value(val: Optional[str]) -> tuple[Optional[str], Optional[int]]:
+        """Split a stored seen value ('size:mtime' or 'size:mtime#book_id') into (sig, book_id)."""
+        if not val:
+            return None, None
+        if '#' in val:
+            sig_part, bid_part = val.rsplit('#', 1)
+            try:
+                return sig_part, int(bid_part)
+            except ValueError:
+                return sig_part, None
+        return val, None
+
+    @staticmethod
+    def _format_seen_value(sig: str, book_id: Optional[int]) -> str:
+        """Format a seen signature with an optional calibre library book_id."""
+        if book_id is not None:
+            return f'{sig}#{int(book_id)}'
+        return sig
+
     def discover_settled_files(
         self,
         folder: str,
         allowed_exts: Iterable[str],
-        min_settle_sec: int = 10
+        min_settle_sec: int = 10,
+        existing_book_ids: Optional[set[int]] = None
     ) -> list[tuple[str, str, str]]:
         """Scan folder for ebook files matching allowed_exts that have settled and have not been imported yet."""
         discovered: list[tuple[str, str, str]] = []
@@ -131,28 +152,67 @@ class AutoImportEngine:
                     except OSError:
                         continue
 
-                    if self._seen.get(full_path) == sig:
+                    stored_val = self._seen.get(full_path)
+                    stored_sig, stored_bid = self._parse_seen_value(stored_val)
+
+                    if existing_book_ids is not None and stored_bid is not None and stored_bid not in existing_book_ids:
+                        # The book previously imported from this file was removed from the calibre library.
+                        self._seen.pop(full_path, None)
                         content_id = self._compute_file_content_id(full_path, st.st_size)
-                        if content_id and self._seen.get(content_id) != sig:
-                            self._seen[content_id] = sig
+                        if content_id:
+                            self._seen.pop(content_id, None)
+                        stored_val, stored_sig, stored_bid = None, None, None
+                        state_updated = True
+
+                    if stored_sig == sig:
+                        if existing_book_ids is not None and stored_bid is None:
+                            # Legacy seen entry without a linked book_id: verify once against the library.
+                            discovered.append((full_path, ext, sig))
+                            continue
+                        content_id = self._compute_file_content_id(full_path, st.st_size)
+                        if content_id and self._seen.get(content_id) != stored_val:
+                            self._seen[content_id] = stored_val or sig
                             state_updated = True
                         continue
 
                     content_id = self._compute_file_content_id(full_path, st.st_size)
-                    renamed_from = [
-                        old_path for old_path, old_sig in list(self._seen.items())
-                        if not old_path.startswith(CONTENT_HASH_PREFIX)
-                        and old_sig == sig
-                        and os.path.splitext(old_path)[1].lower().lstrip('.') == ext
-                        and not os.path.exists(old_path)
-                    ]
-                    if (content_id and content_id in self._seen) or renamed_from:
+                    cid_val = self._seen.get(content_id) if content_id else None
+                    cid_sig, cid_bid = self._parse_seen_value(cid_val)
+                    if existing_book_ids is not None and cid_bid is not None and cid_bid not in existing_book_ids:
+                        if content_id:
+                            self._seen.pop(content_id, None)
+                        cid_val, cid_sig, cid_bid = None, None, None
+                        state_updated = True
+
+                    renamed_from = []
+                    renamed_bid: Optional[int] = cid_bid
+                    for old_path, old_val in list(self._seen.items()):
+                        if old_path.startswith(CONTENT_HASH_PREFIX):
+                            continue
+                        old_sig, old_bid = self._parse_seen_value(old_val)
+                        if (
+                            old_sig == sig
+                            and os.path.splitext(old_path)[1].lower().lstrip('.') == ext
+                            and not os.path.exists(old_path)
+                        ):
+                            if existing_book_ids is not None and old_bid is not None and old_bid not in existing_book_ids:
+                                self._seen.pop(old_path, None)
+                                state_updated = True
+                                continue
+                            renamed_from.append(old_path)
+                            if renamed_bid is None and old_bid is not None:
+                                renamed_bid = old_bid
+
+                    if cid_val is not None or renamed_from:
                         for old_path in renamed_from:
                             self._seen.pop(old_path, None)
-                        self._seen[full_path] = sig
+                        new_stored = self._format_seen_value(sig, renamed_bid)
+                        self._seen[full_path] = new_stored
                         if content_id:
-                            self._seen[content_id] = sig
+                            self._seen[content_id] = new_stored
                         state_updated = True
+                        if existing_book_ids is not None and renamed_bid is None:
+                            discovered.append((full_path, ext, sig))
                         continue
 
                     discovered.append((full_path, ext, sig))
@@ -386,32 +446,40 @@ class AutoImportEngine:
             if abort is not None and abort.is_set():
                 break
             try:
+                was_previously_seen = False
+                with self._lock:
+                    prev_sig, _prev_bid = self._parse_seen_value(self._seen.get(full_path))
+                    was_previously_seen = (prev_sig == sig)
+
                 stem_key = (
                     os.path.normcase(os.path.dirname(full_path)),
                     os.path.splitext(os.path.basename(full_path))[0].strip().lower()
                 )
                 if stem_key in seen_stems_in_batch:
                     skipped_dups += 1
+                    matched_bid = seen_stems_in_batch[stem_key]
+                    stored_entry = self._format_seen_value(sig, matched_bid)
                     content_id = self._compute_file_content_id(full_path)
                     with self._lock:
-                        self._seen[full_path] = sig
+                        self._seen[full_path] = stored_entry
                         if content_id:
-                            self._seen[content_id] = sig
+                            self._seen[content_id] = stored_entry
                     if log_fn:
                         log_fn(
                             f'[AUTO-IMPORT-DUP] Skipped alternate format {os.path.basename(full_path)} '
-                            f'for book #{seen_stems_in_batch[stem_key]}'
+                            f'for book #{matched_bid}'
                         )
                     continue
 
                 mi, sidecar_cover = self._read_metadata_with_sidecars(full_path, ext, log_fn=log_fn)
                 existing_ids = self._find_existing_book_ids(db, mi, full_path=full_path, ext=ext)
+                linked_bid: Optional[int] = existing_ids[0] if existing_ids else None
                 if existing_ids or db.has_book(mi):
-                    if existing_ids:
-                        seen_stems_in_batch[stem_key] = existing_ids[0]
+                    if linked_bid is not None:
+                        seen_stems_in_batch[stem_key] = linked_bid
                     unfixed_existing = [
                         bid for bid in existing_ids
-                        if needs_fix_fn is not None and needs_fix_fn(bid)
+                        if not was_previously_seen and needs_fix_fn is not None and needs_fix_fn(bid)
                     ]
                     if unfixed_existing:
                         for bid in unfixed_existing:
@@ -441,6 +509,7 @@ class AutoImportEngine:
                     )
                     if ids:
                         bid = ids[0]
+                        linked_bid = bid
                         seen_stems_in_batch[stem_key] = bid
                         if sidecar_cover:
                             try:
@@ -460,11 +529,12 @@ class AutoImportEngine:
                                 f'[AUTO-IMPORT-ADD] Imported #{bid} "{mi.title}" '
                                 f'from {os.path.basename(full_path)}'
                             )
+                stored_entry = self._format_seen_value(sig, linked_bid)
                 content_id = self._compute_file_content_id(full_path)
                 with self._lock:
-                    self._seen[full_path] = sig
+                    self._seen[full_path] = stored_entry
                     if content_id:
-                        self._seen[content_id] = sig
+                        self._seen[content_id] = stored_entry
             except Exception as err:
                 if log_fn:
                     log_fn(f'[AUTO-IMPORT-ERR] {os.path.basename(full_path)}: {err}')
