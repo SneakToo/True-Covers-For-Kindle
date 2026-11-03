@@ -430,6 +430,67 @@ class TestAutoImportEngine(unittest.TestCase):
             found_exts = [ext for _, ext, _ in found]
             self.assertEqual(found_exts, ['epub', 'azw3', 'mobi', 'pdf'])
 
+    def test_renamed_watched_file_is_not_rediscovered(self):
+        from auto_import import AutoImportEngine
+        with tempfile.TemporaryDirectory() as tmpdir:
+            watch_dir = os.path.join(tmpdir, 'watch')
+            os.makedirs(watch_dir)
+            state_path = os.path.join(tmpdir, 'watch_state.json')
+
+            old_path = os.path.normpath(os.path.join(watch_dir, 'machinerys_handbook_broken.pdf'))
+            with open(old_path, 'wb') as f:
+                f.write(b'PDF-1.7 Machinery Handbook content payload')
+
+            st = os.stat(old_path)
+            sig = f'{st.st_size}:{int(st.st_mtime)}'
+            engine = AutoImportEngine(state_path)
+            engine._seen[old_path] = sig
+            engine.save()
+
+            new_path = os.path.normpath(os.path.join(watch_dir, "Machinery's Handbook.pdf"))
+            os.rename(old_path, new_path)
+
+            found = engine.discover_settled_files(watch_dir, {'pdf'}, min_settle_sec=0)
+            self.assertEqual(found, [])
+            self.assertEqual(engine._seen.get(new_path), sig)
+            self.assertNotIn(old_path, engine._seen)
+
+    def test_find_existing_book_ids_matches_renamed_calibre_book_by_content_hash(self):
+        from types import SimpleNamespace
+        from auto_import import AutoImportEngine
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src_pdf = os.path.join(tmpdir, 'broken_filename_v29.pdf')
+            lib_pdf = os.path.join(tmpdir, 'library_copy.pdf')
+            payload = b'PDF-1.7 identical binary content for Machinery Handbook'
+            with open(src_pdf, 'wb') as f:
+                f.write(payload)
+            with open(lib_pdf, 'wb') as f:
+                f.write(payload)
+
+            class FakeDb:
+                def all_book_ids(self):
+                    return [180]
+
+                def field_for(self, name, bid):
+                    if name == 'title' and bid == 180:
+                        return "Machinery's Handbook (29th Edition)"
+                    return ''
+
+                def formats(self, bid):
+                    return ('PDF',) if bid == 180 else ()
+
+                def format_abspath(self, bid, fmt):
+                    if bid == 180 and fmt == 'PDF':
+                        return lib_pdf
+                    return None
+
+            mi = SimpleNamespace(title='broken_filename_v29')
+            matched = AutoImportEngine._find_existing_book_ids(
+                FakeDb(), mi, full_path=src_pdf, ext='pdf'
+            )
+            self.assertEqual(matched, [180])
+
 
 class TestBuildPlugin(unittest.TestCase):
     """Tests for build_plugin.py packaging including LICENSE, THIRD_PARTY_NOTICES.md, and optional licenses/ folder."""

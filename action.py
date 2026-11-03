@@ -1078,14 +1078,11 @@ class TrueCoversKindleAction(InterfaceAction):
                     )
                     if dlg.exec() == accepted_code:
                         self._enqueue_personal_document_job(handoff_ids, show_popup=is_manual)
-                    else:
-                        self.auto_import_engine.forget_book_ids(handoff_ids)
                     return
                 elif is_manual:
                     if question_dialog(self.gui, summary_title, handoff_prompt, default_yes=True):
                         self._enqueue_personal_document_job(handoff_ids, show_popup=True)
                         return
-                self.auto_import_engine.forget_book_ids(handoff_ids)
 
             if is_manual and (PREFS['show_summary_dialog'] or has_failures):
                 info_dialog(self.gui, summary_title, summary_body, show=True)

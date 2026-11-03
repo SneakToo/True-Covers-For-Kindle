@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Prevent Duplicate Auto-Import Background Jobs**: Suppressed the `format_added` database listener while an **Auto-Import** batch is actively importing books so newly added books are not queued twice for **Fix Kindle Cover**.
 - **Deterministic Multi-Format Watch Folder Priority**: Sorted discovered files in **Auto-Import** watched folders by format priority (`EPUB` -> `AZW3` -> `MOBI` -> `FB2` -> `DOCX` -> `HTMLZ` -> `RTF` -> `TXT` -> `CBZ` -> `CBR` -> `PDF`) so multi-format book folders always import clean reflowable formats ahead of legacy `MOBI` or `PDF` files.
 - **Suppress Windows Console Window During `AZW3` Conversion**: Passed `CREATE_NO_WINDOW` and hidden `STARTUPINFO` flags when invoking `ebook-convert.exe` so background conversions run completely silently without flashing a black command prompt window.
+- **Prevent Duplicate Auto-Imports When Renaming Books or Files**: Added fast SHA-256 content fingerprinting and library format content matching to **Auto-Import**, and stopped clearing watch-folder seen state when **Fix Kindle Cover** fails, so renaming a book in Calibre or renaming a file on disk never triggers a duplicate import.
 
 ## [1.0.0] - 2026-04-11
 

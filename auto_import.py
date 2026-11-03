@@ -5,7 +5,9 @@ __license__ = 'GPL v3'
 __copyright__ = '2026, Aidan Welch'
 
 import os
+import re
 import time
+import hashlib
 import threading
 from typing import Any, Callable, Iterable, Optional
 
@@ -13,6 +15,10 @@ try:
     from calibre_plugins.true_covers_kindle.core import atomic_json_load, atomic_json_save
 except ImportError:
     from core import atomic_json_load, atomic_json_save
+
+CONTENT_HASH_PREFIX = 'sha256:'
+CONTENT_HASH_CHUNK_BYTES = 65536
+TITLE_ALNUM_RE = re.compile(r'[^a-z0-9]+')
 
 
 class AutoImportEngine:
@@ -63,6 +69,27 @@ class AutoImportEngine:
             self._book_id_to_paths.clear()
             atomic_json_save(self.state_path, self._seen)
 
+    @staticmethod
+    def _compute_file_content_id(full_path: str, file_size: Optional[int] = None) -> Optional[str]:
+        """Compute a fast, non-destructive content fingerprint (size + partial SHA-256) for rename detection."""
+        try:
+            size = int(file_size if file_size is not None else os.path.getsize(full_path))
+            if size <= 0:
+                return None
+            hasher = hashlib.sha256()
+            hasher.update(f'{size}:'.encode('ascii'))
+            with open(full_path, 'rb') as f:
+                hasher.update(f.read(CONTENT_HASH_CHUNK_BYTES))
+                if size > CONTENT_HASH_CHUNK_BYTES * 2:
+                    f.seek(size // 2)
+                    hasher.update(f.read(CONTENT_HASH_CHUNK_BYTES))
+                if size > CONTENT_HASH_CHUNK_BYTES:
+                    f.seek(max(0, size - CONTENT_HASH_CHUNK_BYTES))
+                    hasher.update(f.read(CONTENT_HASH_CHUNK_BYTES))
+            return f'{CONTENT_HASH_PREFIX}{size}:{hasher.hexdigest()}'
+        except OSError:
+            return None
+
     def discover_settled_files(
         self,
         folder: str,
@@ -76,6 +103,7 @@ class AutoImportEngine:
 
         allowed_set = {e.lower().lstrip('.') for e in allowed_exts}
         now = time.time()
+        state_updated = False
         with self._lock:
             for root, _dirs, files in os.walk(folder):
                 for fname in files:
@@ -96,8 +124,34 @@ class AutoImportEngine:
                     except OSError:
                         continue
 
-                    if self._seen.get(full_path) != sig:
-                        discovered.append((full_path, ext, sig))
+                    if self._seen.get(full_path) == sig:
+                        content_id = self._compute_file_content_id(full_path, st.st_size)
+                        if content_id and self._seen.get(content_id) != sig:
+                            self._seen[content_id] = sig
+                            state_updated = True
+                        continue
+
+                    content_id = self._compute_file_content_id(full_path, st.st_size)
+                    renamed_from = [
+                        old_path for old_path, old_sig in list(self._seen.items())
+                        if not old_path.startswith(CONTENT_HASH_PREFIX)
+                        and old_sig == sig
+                        and os.path.splitext(old_path)[1].lower().lstrip('.') == ext
+                        and not os.path.exists(old_path)
+                    ]
+                    if (content_id and content_id in self._seen) or renamed_from:
+                        for old_path in renamed_from:
+                            self._seen.pop(old_path, None)
+                        self._seen[full_path] = sig
+                        if content_id:
+                            self._seen[content_id] = sig
+                        state_updated = True
+                        continue
+
+                    discovered.append((full_path, ext, sig))
+
+            if state_updated:
+                atomic_json_save(self.state_path, self._seen)
         discovered.sort(
             key=lambda item: (
                 os.path.dirname(item[0]).lower(),
@@ -161,9 +215,15 @@ class AutoImportEngine:
 
         return mi, sidecar_cover_bytes
 
-    @staticmethod
-    def _find_existing_book_ids(db: Any, mi: Any) -> list[int]:
-        """Return existing library book IDs matching mi (via find_identical_books or exact case-insensitive title)."""
+    @classmethod
+    def _find_existing_book_ids(
+        cls,
+        db: Any,
+        mi: Any,
+        full_path: str = '',
+        ext: str = ''
+    ) -> list[int]:
+        """Return existing library book IDs matching mi by identity, normalized title, or identical format content."""
         try:
             if hasattr(db, 'find_identical_books'):
                 ids = db.find_identical_books(mi)
@@ -171,17 +231,60 @@ class AutoImportEngine:
                     return sorted(int(bid) for bid in ids)
         except Exception:
             pass
-        title_norm = str(getattr(mi, 'title', '') or '').strip().lower()
-        if not title_norm:
-            return []
-        matched = []
+
+        title_raw = str(getattr(mi, 'title', '') or '').strip().lower()
+        title_alnum = TITLE_ALNUM_RE.sub(' ', title_raw).strip()
+        matched: set[int] = set()
         try:
-            for bid in db.all_book_ids():
-                t = str(db.field_for('title', bid) or '').strip().lower()
-                if t == title_norm:
-                    matched.append(int(bid))
+            all_ids = list(db.all_book_ids())
         except Exception:
-            pass
+            all_ids = []
+
+        if title_raw:
+            for bid in all_ids:
+                try:
+                    t = str(db.field_for('title', bid) or '').strip().lower()
+                    if not t:
+                        continue
+                    if t == title_raw or (title_alnum and TITLE_ALNUM_RE.sub(' ', t).strip() == title_alnum):
+                        matched.add(int(bid))
+                except Exception:
+                    continue
+        if matched:
+            return sorted(matched)
+
+        # Fallback for books renamed inside calibre after import: compare byte size + partial SHA-256
+        # of the watched source file against existing format files in the calibre library.
+        if full_path and os.path.isfile(full_path) and hasattr(db, 'format_abspath'):
+            try:
+                src_size = os.path.getsize(full_path)
+            except OSError:
+                src_size = 0
+            if src_size > 0:
+                src_cid: Optional[str] = None
+                target_fmt = ext.upper().lstrip('.') if ext else ''
+                for bid in all_ids:
+                    try:
+                        raw_fmts = db.formats(bid) or ()
+                        fmts = [str(f).upper() for f in raw_fmts if f]
+                        if target_fmt and target_fmt in fmts:
+                            check_fmts = [target_fmt] + [f for f in fmts if f != target_fmt]
+                        else:
+                            check_fmts = fmts
+                        for fmt in check_fmts:
+                            fmt_path = db.format_abspath(bid, fmt)
+                            if not fmt_path or not os.path.isfile(fmt_path):
+                                continue
+                            if os.path.getsize(fmt_path) != src_size:
+                                continue
+                            if src_cid is None:
+                                src_cid = cls._compute_file_content_id(full_path, src_size)
+                            if src_cid and cls._compute_file_content_id(fmt_path, src_size) == src_cid:
+                                matched.add(int(bid))
+                                break
+                    except Exception:
+                        continue
+
         return sorted(matched)
 
     def ingest_files(
@@ -202,8 +305,8 @@ class AutoImportEngine:
                 break
             try:
                 mi, sidecar_cover = self._read_metadata_with_sidecars(full_path, ext, log_fn=log_fn)
-                if db.has_book(mi):
-                    existing_ids = self._find_existing_book_ids(db, mi)
+                existing_ids = self._find_existing_book_ids(db, mi, full_path=full_path, ext=ext)
+                if existing_ids or db.has_book(mi):
                     unfixed_existing = [
                         bid for bid in existing_ids
                         if needs_fix_fn is not None and needs_fix_fn(bid)
@@ -254,8 +357,11 @@ class AutoImportEngine:
                                 f'[AUTO-IMPORT-ADD] Imported #{bid} "{mi.title}" '
                                 f'from {os.path.basename(full_path)}'
                             )
+                content_id = self._compute_file_content_id(full_path)
                 with self._lock:
                     self._seen[full_path] = sig
+                    if content_id:
+                        self._seen[content_id] = sig
             except Exception as err:
                 if log_fn:
                     log_fn(f'[AUTO-IMPORT-ERR] {os.path.basename(full_path)}: {err}')
