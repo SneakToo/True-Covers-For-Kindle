@@ -54,8 +54,22 @@ AUTHOR_IMPOSTOR_RE = re.compile(
     re.I
 )
 
-STOP_WORDS             = frozenset({'the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'and', 'or', 'is', 'are'})
-EDITION_SUBTITLE_WORDS = frozenset({'novel', 'memoir', 'edition', 'illustrated'})
+STOP_WORDS = frozenset({'the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'and', 'or', 'is', 'are'})
+EDITION_SUBTITLE_WORDS = frozenset({
+    'novel', 'memoir', 'edition', 'ed', 'illustrated', 'revised', 'expanded', 'updated',
+    'anniversary', 'deluxe', 'special', 'digital', 'complete', 'unabridged',
+    'first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth',
+    '1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th', '9th', '10th'
+})
+EDITION_SUFFIX_RE = re.compile(
+    r'(?:,\s*|\s+-\s+|\s+)'
+    r'(?:(?:\d+(?:st|nd|rd|th)|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|'
+    r'revised|expanded|updated|anniversary|deluxe|special|collector\'?s|digital|illustrated|'
+    r'complete|unabridged|student|international)\s+)+'
+    r'(?:edition|ed\.?)\b.*$',
+    re.I
+)
+SURNAME_PARTICLES = frozenset({'le', 'la', 'de', 'del', 'della', 'di', 'da', 'van', 'von', 'der', 'den', 'st', 'st.', 'mac', 'mc'})
 
 
 def atomic_json_load(path: str, default_factory: Callable[[], Any] = dict) -> Any:
@@ -473,34 +487,68 @@ class AsinResolver:
             return []
         t_no_paren = re.sub(r'[\(\[][^)\]]*[\)\]]', ' ', t).strip()
         t_no_illus = re.sub(r',\s*illustrated\b.*$', '', t_no_paren, flags=re.I).strip()
-        short = re.split(r'\s*(?:;|\:|\u2013|\u2014|\s-\s|,\s+or\b)\s*', t_no_illus, flags=re.I)[0].strip()
+        t_no_ed = EDITION_SUFFIX_RE.sub('', t_no_illus).strip()
+        short = re.split(r'\s*(?:;|\:|\u2013|\u2014|\s-\s|,\s+or\b)\s*', t_no_ed, flags=re.I)[0].strip()
+        short = EDITION_SUFFIX_RE.sub('', short).strip()
         variants = []
-        for cand in (short, t_no_illus, t_no_paren, t):
+        for cand in (short, t_no_ed, t_no_illus, t_no_paren, t):
             c_clean = re.sub(r'\s+', ' ', cand).strip()
             if c_clean and c_clean not in variants:
                 variants.append(c_clean)
         return variants
 
     @classmethod
-    def normalize_primary_author(cls, author: Any) -> str:
-        """Extract and normalize the primary author name, converting 'Last, First' to 'First Last'."""
+    def _split_author_segments(cls, author: Any) -> list[str]:
+        """Split an author string into individual normalized 'First Last' author names."""
         a = cls.strip_accents(author).strip()
         if not a:
-            return ''
+            return []
         a = re.sub(r'[\(\[][^)\]]*[\)\]]', ' ', a).strip()
         a = re.sub(
-            r',\s*(?:pere|fils|jr\.?|sr\.?|ii|iii|iv|trans\.?|translator|ed\.?|editor|illus\.?)\b.*$',
+            r',\s*(?:pere|fils|jr\.?|sr\.?|ii|iii|iv|trans\.?|translator|ed\.?|editor|illus\.?)\b',
             '',
             a,
             flags=re.I
         ).strip()
-        a = re.sub(r'^(?:sir|lord|lady|dr\.?|prof\.?)\s+', '', a, flags=re.I).strip()
-        primary = re.split(r'\s*(?:&|\band\b|;)\s*', a, flags=re.I)[0].strip()
-        if ',' in primary and len(primary.split(',')) == 2:
-            parts = [p.strip() for p in primary.split(',')]
-            if len(parts[0].split()) == 1 and len(parts[1].split()) >= 1:
-                primary = f'{parts[1]} {parts[0]}'
-        return re.sub(r'\s+', ' ', primary).strip()
+        raw_segments = [
+            seg.strip()
+            for seg in re.split(r'\s*(?:&|\band\b|;)\s*', a, flags=re.I)
+            if seg.strip()
+        ]
+        authors: list[str] = []
+        for seg in raw_segments:
+            if ',' in seg:
+                comma_parts = [p.strip() for p in seg.split(',') if p.strip()]
+                if len(comma_parts) == 2:
+                    p0_words = comma_parts[0].split()
+                    p1_words = comma_parts[1].split()
+                    if len(p0_words) == 1 and len(p1_words) >= 1:
+                        seg = f'{comma_parts[1]} {comma_parts[0]}'
+                        comma_parts = [seg]
+                    elif (
+                        len(p0_words) == 2
+                        and p0_words[0].lower() in SURNAME_PARTICLES
+                        and len(p1_words) >= 1
+                    ):
+                        seg = f'{comma_parts[1]} {comma_parts[0]}'
+                        comma_parts = [seg]
+                for cp in comma_parts:
+                    cp_clean = re.sub(r'^(?:sir|lord|lady|dr\.?|prof\.?)\s+', '', cp, flags=re.I).strip()
+                    cp_clean = re.sub(r'\s+', ' ', cp_clean).strip()
+                    if cp_clean and cp_clean not in authors:
+                        authors.append(cp_clean)
+            else:
+                seg_clean = re.sub(r'^(?:sir|lord|lady|dr\.?|prof\.?)\s+', '', seg, flags=re.I).strip()
+                seg_clean = re.sub(r'\s+', ' ', seg_clean).strip()
+                if seg_clean and seg_clean not in authors:
+                    authors.append(seg_clean)
+        return authors
+
+    @classmethod
+    def normalize_primary_author(cls, author: Any) -> str:
+        """Extract and normalize the primary author name, converting 'Last, First' to 'First Last'."""
+        authors = cls._split_author_segments(author)
+        return authors[0] if authors else ''
 
     @classmethod
     def _normalize_identity(cls, title: Any, author: Any) -> tuple[str, str]:
@@ -545,7 +593,12 @@ class AsinResolver:
 
         exp_variants = cls.normalize_title_variants(exp_t)
         short_exp = exp_variants[0] if exp_variants else exp_t
-        exp_tokens = [w for w in cls._tokenize_title_words(short_exp) if w not in STOP_WORDS and len(w) > 1]
+        exp_tokens = [
+            w for w in cls._tokenize_title_words(short_exp)
+            if w not in STOP_WORDS and w not in EDITION_SUBTITLE_WORDS and len(w) > 1
+        ]
+        if not exp_tokens:
+            exp_tokens = [w for w in cls._tokenize_title_words(short_exp) if w not in STOP_WORDS and len(w) > 1]
         if not exp_tokens:
             exp_tokens = [w for w in cls._tokenize_title_words(short_exp) if len(w) >= 1]
 
@@ -569,7 +622,7 @@ class AsinResolver:
 
     @classmethod
     def is_matching_author(cls, expected_author: Any, candidate_author: Any) -> bool:
-        """Return True if candidate_author matches expected_author's surname and is not a summary mill impostor."""
+        """Return True if candidate_author matches any co-author surname in expected_author and is not a summary mill."""
         cand_a = cls.strip_accents(candidate_author).strip()
         exp_a = cls.strip_accents(expected_author).strip()
         if not cand_a:
@@ -580,27 +633,35 @@ class AsinResolver:
             if m.group(0).lower() not in exp_a.lower():
                 return False
 
-        prim_exp = cls.normalize_primary_author(expected_author)
-        if not prim_exp:
+        exp_authors = cls._split_author_segments(expected_author)
+        if not exp_authors:
             return True
         cand_clean = re.sub(r'["\'].*?["\']', ' ', cand_a)
-        cand_prim = cls.normalize_primary_author(cand_clean)
-
-        exp_parts = [w for w in re.findall(r'[a-z0-9]+', prim_exp.lower()) if len(w) > 1]
-        cand_parts = [w for w in re.findall(r'[a-z0-9]+', cand_prim.lower()) if len(w) > 1]
-        if not exp_parts:
-            return True
-        if not cand_parts:
+        cand_authors = cls._split_author_segments(cand_clean)
+        if not cand_authors:
             return False
 
-        surname = exp_parts[-1]
-        cand_surname = cand_parts[-1]
-        if surname == cand_surname or surname in cand_parts:
-            return True
+        cand_all_tokens: list[str] = []
+        cand_surnames: list[str] = []
+        for ca in cand_authors:
+            parts = [w for w in re.findall(r'[a-z0-9]+', ca.lower()) if len(w) > 1]
+            if parts:
+                cand_all_tokens.extend(parts)
+                cand_surnames.append(parts[-1])
+        if not cand_all_tokens:
+            return False
 
-        if len(surname) >= 5 and len(cand_surname) >= 5:
-            if difflib.SequenceMatcher(None, surname, cand_surname).ratio() >= cls.MIN_SURNAME_SIMILARITY_RATIO:
+        for ea in exp_authors:
+            exp_parts = [w for w in re.findall(r'[a-z0-9]+', ea.lower()) if len(w) > 1]
+            if not exp_parts:
                 return True
+            surname = exp_parts[-1]
+            if surname in cand_surnames or surname in cand_all_tokens:
+                return True
+            if len(surname) >= 5:
+                for cs in cand_surnames:
+                    if len(cs) >= 5 and difflib.SequenceMatcher(None, surname, cs).ratio() >= cls.MIN_SURNAME_SIMILARITY_RATIO:
+                        return True
         return False
 
     @classmethod
@@ -1011,8 +1072,11 @@ class AsinResolver:
         cache_key = f'{self.clean_isbn(isbn)}|{short_title.lower()}|{primary_author.lower()}'
 
         # Step 1: Check existing B0... ASIN in calibre metadata
+        cdn_only_existing_b0: Optional[str] = None
         for key in AMAZON_IDENTIFIER_KEYS:
-            val = str(identifiers.get(key) or '').strip().upper()
+            raw_val = str(identifiers.get(key) or '').strip().upper()
+            m_b0 = EXTRACT_B0_RE.search(raw_val)
+            val = m_b0.group(1).upper() if m_b0 else raw_val
             if ASIN_B0_RE.match(val):
                 if not verify_cdn:
                     if not force_refresh:
@@ -1022,6 +1086,11 @@ class AsinResolver:
                     if is_live:
                         self.store_b0_cache(cache_key, val, verified=True)
                         return val, 'verified_existing_b0'
+                    if cdn_only_existing_b0 is None and not force_refresh:
+                        cdn_ok, cdn_sz = self.verify_asin_live_cover(val, '', '')
+                        if cdn_ok:
+                            cdn_only_existing_b0 = val
+                            cdn_only_existing_sz = cdn_sz
 
         # Step 2: Check persistent local cache
         if not force_refresh:
@@ -1058,6 +1127,18 @@ class AsinResolver:
             )
             if match:
                 return match
+
+        if cdn_only_existing_b0:
+            short_t, prim_a = self._normalize_identity(short_title, primary_author)
+            with self._lock:
+                self._verified_asins[cdn_only_existing_b0] = {
+                    'short_title': short_t,
+                    'primary_author': prim_a,
+                    'size': cdn_only_existing_sz,
+                    'ts': time.time(),
+                }
+            self.store_b0_cache(cache_key, cdn_only_existing_b0, verified=True)
+            return cdn_only_existing_b0, 'verified_existing_b0'
 
         # Step 4: Optional Print ISBN-10 fallback
         if use_isbn10_fallback:

@@ -187,6 +187,27 @@ class TestAsinResolver(unittest.TestCase):
             AsinResolver.normalize_primary_author('Dr. Gabriel García Márquez (Translator)'),
             'Gabriel Garcia Marquez'
         )
+        # Comma-separated co-authors ("First1 Last1, First2 Last2") extract the first co-author
+        self.assertEqual(
+            AsinResolver.normalize_primary_author('Michael Swaine, Paul Freiberger'),
+            'Michael Swaine'
+        )
+        self.assertTrue(
+            AsinResolver.is_matching_author('Michael Swaine, Paul Freiberger', 'Michael Swaine')
+        )
+        self.assertTrue(
+            AsinResolver.is_matching_author('Michael Swaine, Paul Freiberger', 'Paul Freiberger')
+        )
+        # Edition suffixes like ", Third Edition" are stripped to the core title
+        fire_variants = AsinResolver.normalize_title_variants('Fire in the Valley, Third Edition')
+        self.assertEqual(fire_variants[0], 'Fire in the Valley')
+        self.assertFalse(
+            AsinResolver.is_derivative_or_mismatched_title(
+                'Fire in the Valley, Third Edition',
+                'Fire in the Valley: The Birth and Death of the Personal Computer',
+                'Michael Swaine, Paul Freiberger'
+            )
+        )
 
     def test_derivative_spam_and_title_matching(self):
         # Genuine editions match
